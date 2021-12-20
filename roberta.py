@@ -24,8 +24,10 @@ import re
 import random
 import time
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import precision_score, recall_score
 from tqdm import tqdm
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
+from itertools import chain
 
 
 
@@ -152,7 +154,6 @@ class TweetDataset(torch.utils.data.Dataset):
         self.has_link = df.has_link.values
         self.num_tag = df.num_tag.values
         self.num_of_likes = df.num_of_likes.values
-        self.friends_count = df.friends_count.values 
     
     def __len__(self):
         return len(self.tweet_input_ids)
@@ -173,7 +174,7 @@ class TweetDataset(torch.utils.data.Dataset):
         y = self.num_of_likes[index]
 
         return {'tweet': tweet, 'description':user_bio, 'user_location':user_location, 'num_emoji': self.num_emoji[index], 'follower_count': self.follower_count[index], 'has_mark': self.has_mark[index], 'has_num': self.has_num[index], 'retweet_count': self.retweet_count[index],
-                'num_at': self.num_at[index], 'friends_count': self.friends_count[index], 'has_link': self.has_link[index], 'num_tag': self.num_tag[index], 'num_of_likes': y}
+                'num_at': self.num_at[index], 'has_link': self.has_link[index], 'num_tag': self.num_tag[index], 'num_of_likes': y}
 
 class BertClassifier(nn.Module):
     def __init__(self, num_string, num_float, num_bool, output_dimension, freeze_bert=False):
@@ -193,7 +194,7 @@ class BertClassifier(nn.Module):
         output_size = 768 * num_string + float_out * num_float
         if num_bool != 0:
             output_size += 8
-        h1, h2, h3 = 1024, 256, 64
+        h1, h2, h3 = 512, 256, 64
 
         self.classifier = nn.Sequential(
             nn.Linear(output_size, h1),
@@ -326,7 +327,7 @@ def initialize_model(num_string, num_float, num_bool, output_dimension, epochs=4
 
     # Create the optimizer
     optimizer = AdamW(bert_classifier.parameters(),
-                      lr=1e-5,    # Default learning rate
+                      lr=5e-5,    # Default learning rate
                       eps=1e-4,    # Default epsilon value
                       weight_decay=1e-3
                       )
@@ -428,6 +429,7 @@ def train(model, train_dataloader, selected_keys, val_dataloader=None, epochs=4,
         print("\n")
     
     print("Training complete!")
+    return model
 
 
 def evaluate(model, val_dataloader, selected_keys):
@@ -468,6 +470,58 @@ def evaluate(model, val_dataloader, selected_keys):
     val_accuracy = np.mean(val_accuracy)
 
     return val_loss, val_accuracy
+    
+def test(model, test_dataloader, selected_keys):
+    """After the completion of each training epoch, measure the model's performance
+    on our validation set.
+    """
+    # Put the model into the evaluation mode. The dropout layers are disabled during
+    # the test time.
+    model.load_state_dict(torch.load("model.torch"))
+
+    # Tracking variables
+    test_accuracy = []
+    test_loss = []
+    total_pred = []
+    total_label = []
+    # For each batch in our validation set...
+    for batch in test_dataloader:
+        # Load batch to GPU
+        # b_input_ids, b_attn_mask, a_input_ids, a_attn_mask, val_meta, b_labels = tuple(t.to(device) for t in batch)
+
+        # Compute logits
+        with torch.no_grad():
+            logits, labels = model(batch, selected_keys)
+
+        # labels = batch['num_of_likes'].to(device)
+        # Compute loss
+        # loss = loss_fn(logits, labels)
+        # val_loss.append(loss.item())
+
+        # Get the predictions
+        preds = torch.argmax(logits, dim=1).flatten()
+        total_pred.append(np.array(preds.cpu()))
+        total_label.append(np.array(labels.cpu()))
+        # # Calculate the accuracy rate
+        # accuracy = (preds == labels).cpu().numpy().mean() * 100
+        # val_accuracy.append(accuracy)
+
+    # Compute the average accuracy and loss over the validation set.
+    # val_loss = np.mean(val_loss)
+    # val_accuracy = np.mean(val_accuracy)
+    total_label = list(chain.from_iterable(total_label))
+    total_pred = list(chain.from_iterable(total_pred))
+
+    print(total_pred)
+    print(total_label)
+        
+    precision = precision_score(total_label, total_pred, average='binary')
+    recall = recall_score(total_label, total_pred, average='binary')
+    print(precision)
+    print(recall)
+    
+
+    # return val_loss, val_accuracy
 
 if __name__ == "__main__": 
     if torch.cuda.is_available():       
@@ -491,12 +545,13 @@ if __name__ == "__main__":
     input2model = Input2Model(df)
 
     train_df, val_df = input2model.model_input()
+    test_df, val_df = train_test_split(val_df, test_size = 0.5, random_state=2020)
     train_tweet_input_ids, train_tweet_attention_masks, train_user_bio_ids, train_user_bio_attention_masks, train_user_location_ids, train_user_location_attention_masks = input2model.preprocess_for_BERT(train_df)
     val_tweet_input_ids, val_tweet_attention_masks, val_user_bio_ids, val_user_bio_attention_masks, val_user_location_ids, val_user_location_attention_masks = input2model.preprocess_for_BERT(val_df)
+    test_tweet_input_ids, test_tweet_attention_masks, test_user_bio_ids, test_user_bio_attention_masks, test_user_location_ids, test_user_location_attention_masks = input2model.preprocess_for_BERT(test_df)
 
     from sklearn import preprocessing
     train_df = train_df.apply(preprocessing.LabelEncoder().fit_transform)
-    train_df
 
     from sklearn.feature_selection import SelectKBest
     from sklearn.feature_selection import chi2
@@ -520,14 +575,27 @@ if __name__ == "__main__":
 
     val_sampler = RandomSampler(val_data)
     val_dataloader = DataLoader(val_data, sampler=val_sampler, batch_size=batch_size, drop_last=True)
+    
+    test_data = TweetDataset(test_tweet_input_ids, test_tweet_attention_masks, test_user_bio_ids, test_user_bio_attention_masks, test_user_location_ids, test_user_location_attention_masks, test_df)
 
-    selected_keys = ['tweet']
+    test_sampler = RandomSampler(test_data)
+    test_dataloader = DataLoader(test_data, sampler=test_sampler, batch_size=batch_size, drop_last=True)
+
+    selected_keys = ['tweet','retweet_count', 'user_location', 'description', 'has_num']
 
     print(selected_keys)
-    print("lr = 1e-5, eps = 1e-4, weightdecay = 1e-3, numwarmup = h1=1024, h2=256, h3 = 64, batch = 32")
+    print("lr = 5e-5, eps = 1e-4, weightdecay = 1e-3, numwarmup = 0, h3 = 64, batch = 32")
 
     loss_fn = nn.CrossEntropyLoss()
     set_seed(42)    # Set seed for reproducibility
-    bert_classifier, optimizer, scheduler = initialize_model(num_string = 1, num_float = 0, num_bool = 0, output_dimension = 2)
-    train(bert_classifier, train_dataloader, selected_keys, val_dataloader, epochs=6, evaluation=True)
+    bert_classifier, optimizer, scheduler = initialize_model(num_string = 3, num_float = 1, num_bool = 1, output_dimension = 2)
+    train_ind = True
+    if train_ind:
+        model = train(bert_classifier, train_dataloader, selected_keys, val_dataloader, epochs=6, evaluation=True)
+        torch.save(model.state_dict(), "model.torch")
+    else:
+        test(bert_classifier, test_dataloader, selected_keys)
+        
+    
+    
 
