@@ -1,3 +1,5 @@
+Designed a BERT-based neural network and RoBERTa model by taking user description, user location, tweet text and other features as input and the number of likes as output to predict the popularity of tweets in climate change in Python. Data is preprocessed from the dataset crawled from the most recent 92540 tweets from different Twitter users using Tweepy. The performance of the model is evaluated with top three important tweet features, to get 90% best accuracy score in prediction.
+
 ***relevant_tweet.jsonl*** contains the crawled climate change tweet dataset.
 
 ***cleaned_tweet.jsonl*** contains the twitter features after cleaning and preprocessing data.
